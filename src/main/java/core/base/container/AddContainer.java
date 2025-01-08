@@ -1,0 +1,176 @@
+package core.base.container;
+
+import core.base.item.Item;
+import core.base.item.Position;
+import core.base.item.RotationType;
+import core.base.item.Space;
+import core.base.space.SpaceService;
+
+import java.util.*;
+
+
+public final class AddContainer extends ContainerBase implements Container {
+
+	private final Set<String> uniquePositionKeys = new HashSet<>();
+	private final Map<Position, List<Space>> spacePositions = new HashMap<>();
+	private final SpaceService spaceService = new SpaceService();
+
+	/* Is called by reflection */
+	public AddContainer(
+			int width,
+			int length,
+			int height,
+			float maxWeight,
+			int containerType,
+			ContainerParameter parameter
+	) {
+		super(width, length, height, maxWeight, containerType, parameter);
+		init();
+	}
+
+	public AddContainer(Container containerPrototype) {
+		super(containerPrototype);
+		init();
+	}
+
+	private void init() {
+		for(Position pos:activePosList) {
+			spacePositions.put(pos, Collections.singletonList(Space.of(length, width, height)));
+		}
+	}
+
+	@Override
+	public Container newInstance() {
+		return new AddContainer(this);
+	}
+
+	/**
+	 * Adds item to container and update internal data structure
+	 * - New positions with spaces
+	 * - Remove covered positions
+	 */
+	@Override
+	public int add(Item item, Position pos, RotationType isRotated) {
+		pos = normPosition(item, pos, isRotated);
+
+		addItem(item, pos);
+
+		// Active position gets inactive by adding item
+		removePosition(pos);
+
+		removeCoveredPositions(item);
+
+		// Check existing spaces, if new item will shrink them
+		checkExistingSpaces(item);
+
+		// Create new insert positions and spaces
+		List<Position> newPosList = findInsertPositions(item);
+		for (Position newPos : newPosList) {
+			if(uniquePositionKeys.contains(newPos.getKey())) {
+				continue;
+			}
+
+			activePosList.add(newPos);
+			uniquePositionKeys.add(newPos.getKey());
+
+			List<Space> newSpaces = createSpaces(newPos);
+			if(newSpaces.size() > 0) {
+				spacePositions.put(newPos, newSpaces);
+			} else {
+				removePosition(newPos);
+			}
+		}
+
+		updateBearingCapacity(List.of(item));
+
+		addToCenterOfGravity(item, pos);
+
+		history.add(item);
+
+		return item.index;
+	}
+
+	/* Create spaces
+	 * Begin with maximal space and check for each item in max-space
+	 * if smaller spaces are possible.
+	 */
+	private List<Space> createSpaces(Position newPos) {
+		Space maxSpace = Space.of(
+				length - newPos.y(),
+				width - newPos.x(),
+				height - newPos.z()
+		);
+		Set<Item> spaceItems = spaceService.getItemsInSpace(newPos, maxSpace, itemList);
+
+		Set<Space> spaces = new HashSet<>(Set.of(maxSpace));
+		for (Item spaceItem : spaceItems) {
+
+			Set<Space> nextSpaces = new HashSet<>();
+			for (Space space : spaces) {
+				nextSpaces.addAll(
+						spaceService.createSpacesAtPosition(newPos, space, spaceItem)
+				);
+			}
+			spaces = nextSpaces;
+		}
+
+		return spaceService.getDominatingSpaces(spaces);
+	}
+
+	private void removePosition(Position position) {
+		activePosList.remove(position);
+		uniquePositionKeys.remove(position.getKey());
+		spacePositions.remove(position);
+	}
+
+	/**
+	 * Remove item from container and update internal data structure
+	 */
+	@Override
+	public void remove(Item item) {
+		throw new UnsupportedOperationException("Remove in AddContainer is not supported. Use AddRemoveContainer");
+	}
+
+	private void removeCoveredPositions(Item item) {
+		for (Position position : findCoveredPositions(item)) {
+			removePosition(position);
+		}
+	}
+
+	private void checkExistingSpaces(Item newItem) {
+		List<Position> removablePositions = new ArrayList<>();
+		for (Position position : activePosList) {
+			// Is position out of reach for newItem
+			if(position.x() >= newItem.xw ||
+					position.y() >= newItem.yl ||
+					position.z() >= newItem.zh)
+				continue;
+
+			Set<Space> newSpaces = new HashSet<>();
+			for (Space space : spacePositions.get(position)) {
+				newSpaces.addAll(
+						spaceService.createSpacesAtPosition(
+								position,
+								space,
+								newItem
+						)
+				);
+			}
+
+			List<Space> spaces = spaceService.getDominatingSpaces(newSpaces);
+			if(spaces.size() > 0) {
+				spacePositions.put(position, spaces);
+			} else {
+				removablePositions.add(position);
+			}
+		}
+
+		for (Position removablePosition : removablePositions) {
+			removePosition(removablePosition);
+		}
+	}
+
+	public List<Space> getSpace(Position pos) {
+		return spacePositions.get(pos);
+	}
+}
